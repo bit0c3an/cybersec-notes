@@ -1,0 +1,93 @@
+
+# Write-Up: SQL injection with filter bypass via XML encoding
+
+## 📝 Descripción
+Este laboratorio presenta una vulnerabilidad de **Inyección SQL basada en UNION** en su funcionalidad de verificación de stock ("Stock Check"). Los datos se envían al servidor en formato **XML**. Además, existe un WAF (Web Application Firewall) que bloquea las peticiones que contienen palabras clave obvias de SQLi, por lo que es necesario ofuscar el payload utilizando entidades XML.
+
+* **Plataforma:** PortSwigger Web Security Academy
+* **Dificultad:** Practicante (Practitioner)
+* **Categoría:** SQL Injection / WAF Bypass
+
+---
+
+## 🎯 Objetivos
+- [ ] Identificar el vector de inyección dentro del formato XML.
+- [ ] Evadir el WAF utilizando codificación de entidades XML (`Hex/Dec Entities`).
+- [ ] Determinar el número de columnas y exfiltrar las credenciales de la tabla `users`.
+- [ ] Iniciar sesión como el usuario `administrator`.
+
+---
+
+## 🔍 Fase de Reconocimiento (Recon)
+
+1. Al interactuar con la página web y hacer clic en **"Check stock"**, interceptamos la petición en **Burp Suite**.
+2. Observamos que la aplicación envía una petición `POST` hacia `/product/stock` con el cuerpo en formato XML:
+
+```xml
+POST /product/stock HTTP/1.1
+...
+<stockCheck>
+    <productId>1</productId>
+    <storeId>1</storeId>
+</stockCheck>
+
+    Enviamos la petición al Repeater (Ctrl + R) para realizar pruebas avanzadas.
+
+    Probamos si el campo <storeId> evalúa operaciones matemáticas básicas. Cambiamos <storeId>1</storeId> por:
+    XML
+
+    <storeId>1+1</storeId>
+
+    Al enviarlo, el servidor responde con los datos correspondientes a la tienda con ID 2. Esto nos confirma que el backend toma nuestro input y lo procesa directamente en una consulta SQL.
+
+🧱 El Bloqueo del WAF
+
+Para explotar una inyección basada en UNION, intentamos inyectar un payload clásico para probar columnas:
+XML
+
+<storeId>1 UNION SELECT NULL</storeId>
+
+Resultado: El servidor devuelve una respuesta de error (ej. 403 Forbidden o un mensaje de bloqueo). El WAF detectó las palabras clave UNION y SELECT.
+⚡ Explotación y Bypass del WAF
+
+Como el servidor procesa XML, decodificará las entidades XML después de que pasen por el WAF pero antes de enviarlas al motor SQL.
+1. Ofuscación con Hackvertor
+
+Instalamos la extensión Hackvertor desde la BApp Store de Burp Suite.
+Seleccionamos nuestro payload malicioso, hacemos clic derecho y elegimos:
+Extensions > Hackvertor > Encode > hex_entities (o dec_entities).
+
+El tag de Hackvertor convierte el texto plano en entidades hexadecimales que el WAF no reconoce como peligrosas.
+2. Determinar Columnas y Exfiltrar Datos
+
+Al probar con UNION SELECT NULL, determinamos que la consulta original solo devuelve una sola columna (si intentamos pasar más, la aplicación devuelve 0 unidades o da error).
+
+Como solo tenemos una columna disponible para mostrar resultados, debemos concatenar el nombre de usuario y la contraseña utilizando el operador de concatenación de la base de datos (en este caso, || para PostgreSQL/Oracle).
+Payload Final Ofuscado:
+XML
+
+<storeId><@hex_entities>1 UNION SELECT username || '~' || password FROM users</@hex_entities></storeId>
+
+Al enviar la petición, el WAF ve caracteres extraños (&#x55;...), los deja pasar, y el backend los traduce a esto:
+SQL
+
+1 UNION SELECT username || '~' || password FROM users
+
+📋 Resultado en la Respuesta del Servidor:
+
+La respuesta HTTP nos devuelve exitosamente las credenciales de la base de datos reflejadas en la etiqueta de stock:
+XML
+
+🛠️ Resolución
+
+    Copiamos la contraseña exfiltrada correspondiente al usuario administrator.
+
+    Volvemos a la interfaz web del laboratorio, vamos a la sección My Account.
+
+    Iniciamos sesión con las credenciales obtenidas:
+
+        User: administrator
+
+        Password: qn407dp9d135t5qh4frt
+
+  
