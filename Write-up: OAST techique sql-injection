@@ -1,0 +1,38 @@
+# Write-Up: [Nombre del Laboratorio / Máquina]
+
+## 📝 Descripción
+Breve descripción de la máquina o el laboratorio. ¿Cuál es el objetivo? (Por ejemplo: *"Laboratorio de PortSwigger para explotar una vulnerabilidad de Blind SQL Injection basada en respuestas condicionales"*).
+
+* **Plataforma:** [PortSwigger / TryHackMe / HackTheBox]
+* **Dificultad:** [Fácil / Media / Difícil]
+* **Categoría:** [Web Security / SOC / Network / SQLi]
+
+---
+
+## 🎯 Objetivos
+- [ ] Encontrar un vector de entrada vulnerable.
+- [ ] Exfiltrar la contraseña del administrador.
+- [ ] Iniciar sesión como `administrator`.
+
+---
+
+## 🔍 Fase de Reconocimiento (Recon)
+Detalla cómo descubriste la vulnerabilidad. Puedes incluir capturas de pantalla o fragmentos de logs.
+
+1. **Análisis Inicial:** Al navegar por la aplicación, se identificó que la cookie `TrackingId` se utiliza para rastrear sesiones y se procesa en la base de datos.
+2. **Prueba de Inyección:** Al modificar el valor de la cookie, se observaron comportamientos condicionales en la respuesta de la página (ej. la presencia o ausencia del mensaje *"Welcome back"*).
+
+### Payload de prueba:
+`TrackingId=xyz' AND '1'='1` -> Regresa un código 200 y muestra "Welcome back".
+`TrackingId=xyz' AND '1'='2` -> Regresa un código 200 pero NO muestra el mensaje.
+
+---
+
+## ⚡ Explotación
+Paso a paso de cómo aprovechaste la vulnerabilidad para lograr el objetivo.
+
+### 1. Confirmación de la Base de Datos y Tabla
+Para confirmar que estamos ante una base de datos específica (por ejemplo, PostgreSQL/Oracle) y verificar la existencia de la tabla de usuarios:
+
+```sql
+TrackingId=xyz' AND (SELECT 'a' FROM users LIMIT 1)='a
