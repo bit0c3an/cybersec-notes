@@ -1,0 +1,74 @@
+Web Security Write-Up: WAF Bypass & SQLi Behavior Analysis on Enterprise Search Endpoints
+1. Executive Summary
+
+During a controlled security assessment of the search infrastructure at Monash University (www.monash.edu), the main search endpoint was analyzed against Boolean-based SQL Injection (SQLi) vectors. While a robust Web Application Firewall (WAF) initially blocked automated testing, a successful perimeter bypass was executed to directly evaluate the backend application logic. The assessment concluded that the search parameter is Not Vulnerable due to its underlying enterprise search indexing architecture.
+2. Target & Endpoint Discovery
+
+The primary target was the global search form interface. A legitimate intercepted HTTP request revealed the following structure:
+
+    Target URL: https://www.monash.edu/search
+
+    Target Parameter: q (Search query string)
+
+    Context Parameter: collection=mon~sp-main-search (Indicating the use of a pre-indexed enterprise search collection rather than a raw relational database query).
+
+3. Technical Obstacles & Solutions (The Troubleshooting Journey)
+❌ Obstacle 1: Perimeter Block via WAF (Cloudflare Bot Management)
+
+Initial attempts to fuzz the endpoint using traditional CLI automated tools resulted in immediate HTTP 400 (Bad Request) responses with a Size: 0 body.
+
+    Root Cause: Cloudflare utilizes advanced bot mitigation strategies, tracking the dynamic __cf_bm cookie and performing JA3/JA4 TLS Fingerprinting to detect and drop connections originating from non-browser network stacks.
+
+    Solution: Integrated the OWASP ZAP suite with Selenium WebDriver inside a Kali Linux environment. Installed the system-native geckodriver (/usr/bin/geckodriver) to orchestrate a legitimate, fully-interactive instance of Firefox. Solving the initial anti-bot challenge manually allowed ZAP to inherit a legitimate TLS signature and a trusted session.
+
+❌ Obstacle 2: HSTS Enforcement on Intercepting Proxy
+
+Upon forcing the automated browser traffic through ZAP's local intercepting proxy (127.0.0.1:8080), Firefox blocked the connection entirely with the following error:
+
+    “Software is Preventing Firefox From Safely Connecting to This Site”
+
+    Root Cause: The target domain enforces strict HTTP Strict Transport Security (HSTS). Because the freshly launched automated Firefox instance did not trust ZAP’s generated Root CA, it actively blocked the connection to prevent a perceived Man-in-the-Middle (MitM) condition.
+
+    Solution: Navigated to ZAP's modern configuration layout under Network -> Server Certificates, exported the ZAP Root CA (zap_root_ca.cer), and manually imported it into Firefox's certificate manager under the Authorities tab, granting explicit trust to identify websites.
+
+4. Fuzzing Phase & Response Analysis
+
+With the proxy chain properly configured and the WAF successfully bypassed, the OWASP ZAP Fuzzer was deployed to inject common SQLi bypass payloads into the q parameter. A URL Encode processor rule was enforced to guarantee payload compatibility.
+
+The following payloads were tested against the baseline query:
+
+    ' OR 1=1-- - (True condition)
+
+    ' OR '1'='1 (True condition)
+
+    ' && 1=2-- - (False condition)
+
+    '//AND//1=2-- - (Space-bypass / False condition)
+
+    ' AND 1 LIKE 2-- - (Alternative operator / False condition)
+
+📊 Behavioral Response Table
+Payload	HTTP Code	Size Resp. Body	Backend Behavior
+cybersecurity (Original)	200 OK	Baseline Bytes	Returns ~14,946 structured query results.
+' OR 1=1-- -	200 OK	Uniform Variant Bytes	Payload stripped/treated as literal text.
+' OR '1'='1	200 OK	Uniform Variant Bytes	Payload stripped/treated as literal text.
+' && 1=2-- -	200 OK	Uniform Variant Bytes	Payload stripped/treated as literal text.
+' AND 1 LIKE 2-- -	200 OK	Uniform Variant Bytes	Payload stripped/treated as literal text.
+5. Definitive Technical Diagnosis
+
+Analyzing the Size column from the Fuzzer results yielded two critical insights:
+
+    Absolute Size Uniformity: All 5 SQLi logical variants (both mathematically true and false arguments) returned responses with the exact same byte length. If the parameter were interacting with a raw SQL relational backend (e.g., MySQL, PostgreSQL), a false statement like AND 1 LIKE 2 would have restricted rows entirely, resulting in either a 0-result page size difference or a database syntax error (HTTP 500).
+
+    Character Abstraction Layer: The application utilizes an enterprise index engine (such as Funnelback or Solr, as indicated by the collection parameter) that treats special control characters (', --, AND, OR) as literal text or throws them out as stop-words. Because the engine strips the operational logic of the payload, the backend effectively ran a plain-text search on the word "cybersecurity" for all instances, rendering an identical HTML tree across every payload.
+
+6. Conclusion & Key Takeaways
+
+The endpoint is definitively classified as a False Positive / Not Vulnerable to SQL Injection.
+Key Achievements:
+
+    Infrastructure Mastery: Successfully configured a local Selenium + Geckodriver framework inside Kali Linux to bridge advanced browser automation with OWASP ZAP.
+
+    WAF Evasion: Bypassed restrictive Cloudflare JA3/JA4 TLS fingerprinting by mimicking authentic client connection states.
+
+    Data-Driven Proof: Evaluated backend immunity by cross-referencing precise HTTP response byte alterations rather than relying on automated scanning heuristics.
